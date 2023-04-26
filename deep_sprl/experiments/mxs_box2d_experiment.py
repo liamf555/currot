@@ -5,59 +5,29 @@ import numpy as np
 from deep_sprl.experiments.abstract_experiment import AbstractExperiment, Learner
 from deep_sprl.teachers.alp_gmm import ALPGMM, ALPGMMWrapper
 from deep_sprl.teachers.spl import SelfPacedTeacherV2, SelfPacedWrapper, CurrOT
+from stable_baselines3.common.monitor import Monitor
 from deep_sprl.teachers.dummy_teachers import UniformSampler, DistributionSampler
 from deep_sprl.teachers.abstract_teacher import BaseWrapper
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+# import wandb
+# from wandb.integration.sb3 import WandbCallback
+
 from deep_sprl.teachers.util import Subsampler
 from scipy.stats import multivariate_normal
-
+import gym_mxs
 
 def logsumexp(x):
     xmax = np.max(x)
     return np.log(np.sum(np.exp(x - xmax))) + xmax
 
 
-class PointMass2DExperiment(AbstractExperiment):
-    TARGET_MEANS = np.array([[3., 0.5], [-3., 0.5]])
-    TARGET_VARIANCES = np.array([np.diag([1e-4, 1e-4]), np.diag([1e-4, 1e-4])])
+class MXSBox2DExperiment(AbstractExperiment):
+    # TARGET_MEANS = np.array([[3., 0.5], [-3., 0.5]])
+    # TARGET_VARIANCES = np.array([np.diag([1e-4, 1e-4]), np.diag([1e-4, 1e-4])])
 
-    LOWER_CONTEXT_BOUNDS = np.array([-4., 0.5])
-    UPPER_CONTEXT_BOUNDS = np.array([4., 8.])
-
-    def target_log_likelihood(self, cs):
-        p0 = multivariate_normal.logpdf(cs, self.TARGET_MEANS[0], self.TARGET_VARIANCES[0])
-        p1 = multivariate_normal.logpdf(cs, self.TARGET_MEANS[1], self.TARGET_VARIANCES[1])
-
-        pmax = np.maximum(p0, p1)
-        # There is another factor of 0.5 since exactly half of the distribution is out of bounds
-        return np.log(0.5 * 0.5 * (np.exp(p0 - pmax) + np.exp(p1 - pmax))) + pmax
-
-    def target_sampler(self, n=None, rng=None):
-        if n is None:
-            n = self.EP_PER_UPDATE
-
-        if rng is None:
-            rng = np.random
-
-        if n % 2 == 0:
-            s0 = rng.multivariate_normal(self.TARGET_MEANS[0], self.TARGET_VARIANCES[0], size=n // 2)
-            s1 = rng.multivariate_normal(self.TARGET_MEANS[1], self.TARGET_VARIANCES[1], size=n // 2)
-        else:
-            s0 = rng.multivariate_normal(self.TARGET_MEANS[0], self.TARGET_VARIANCES[0], size=(n - 1) // 2)
-            s1 = rng.multivariate_normal(self.TARGET_MEANS[1], self.TARGET_VARIANCES[1], size=(n + 1) // 2)
-
-        return np.concatenate((s0, s1), axis=0)
-
-    INITIAL_MEAN = np.array([0., 4.25])
-    INITIAL_VARIANCE = np.diag(np.square([2, 1.875]))
-
-    STD_LOWER_BOUND = np.array([0.2, 0.1875])
-    KL_THRESHOLD = 8000.
-    KL_EPS = 0.25
-    DELTA = 4.0
-    METRIC_EPS = 0.5
-    EP_PER_UPDATE = 20
+    LOWER_CONTEXT_BOUNDS = np.array([2])
+    UPPER_CONTEXT_BOUNDS = np.array([2,])
 
     STEPS_PER_ITER = 4096
     DISCOUNT_FACTOR = 0.95
@@ -69,11 +39,15 @@ class PointMass2DExperiment(AbstractExperiment):
 
     def __init__(self, base_log_dir, curriculum_name, learner_name, parameters, seed):
         super().__init__(base_log_dir, curriculum_name, learner_name, parameters, seed)
-        self.eval_env, self.vec_eval_env = self.create_environment(evaluation=True)
+        # self.eval_env, self.vec_eval_env = self.create_environment(evaluation=True)
 
     def create_environment(self, evaluation=False):
         print("Creating environment, evaluation={}".format(evaluation))
-        env = gym.make("ContextualPointMass2D-v1")
+        # from gym_mxs.envs import MxsEnvBox2D
+        env = gym.make("MXSBox2D-v0")
+        # env = MxsEnvBox2D()
+        env= gym.wrappers.TimeLimit(env, max_episode_steps=1000)
+        env = Monitor(env, "./logs")
         if evaluation or self.curriculum.default():
             teacher = DistributionSampler(self.target_sampler, self.LOWER_CONTEXT_BOUNDS, self.UPPER_CONTEXT_BOUNDS)
             env = BaseWrapper(env, teacher, self.DISCOUNT_FACTOR, context_visible=True)
@@ -87,9 +61,16 @@ class PointMass2DExperiment(AbstractExperiment):
 
         return env, DummyVecEnv([lambda: env])
 
+    # def create_learner_params(self):
+    #     return dict(common=dict(gamma=self.DISCOUNT_FACTOR, seed=self.seed, verbose=0, device="cpu",
+    #                             policy_kwargs=dict(net_arch=[128, 128, 128], activation_fn=torch.nn.Tanh)),
+    #                 ppo=dict(n_steps=self.STEPS_PER_ITER, gae_lambda=self.LAM, batch_size=128),
+    #                 sac=dict(learning_rate=3e-4, buffer_size=10000, learning_starts=500, batch_size=64,
+    #                          train_freq=5, target_entropy="auto"))
+
     def create_learner_params(self):
-        return dict(common=dict(gamma=self.DISCOUNT_FACTOR, seed=self.seed, verbose=0, device="cpu",
-                                policy_kwargs=dict(net_arch=[128, 128, 128], activation_fn=torch.nn.Tanh)),
+        return dict(common=dict(gamma=self.DISCOUNT_FACTOR, seed=self.seed, verbose=1, device="cpu",
+                                ),
                     ppo=dict(n_steps=self.STEPS_PER_ITER, gae_lambda=self.LAM, batch_size=128),
                     sac=dict(learning_rate=3e-4, buffer_size=10000, learning_starts=500, batch_size=64,
                              train_freq=5, target_entropy="auto"))
@@ -99,23 +80,24 @@ class PointMass2DExperiment(AbstractExperiment):
         timesteps = 200 * self.STEPS_PER_ITER
 
         env, vec_env = self.create_environment(evaluation=False)
-        model, interface = self.learner.create_learner(vec_env, self.create_learner_params())
+        model, interface = self.learner.create_learner(vec_env, self.create_learner_params(), self.get_log_dir())
 
         callback_params = {"learner": interface, "env_wrapper": env, "save_interval": 5,
                            "step_divider": self.STEPS_PER_ITER}
         return model, timesteps, callback_params
 
     def create_self_paced_teacher(self, with_callback=False):
-        print("Creating self-paced teacher")
-        bounds = (self.LOWER_CONTEXT_BOUNDS.copy(), self.UPPER_CONTEXT_BOUNDS.copy())
-        if self.curriculum.self_paced():
-            return SelfPacedTeacherV2(self.target_log_likelihood, self.target_dsampler, self.INITIAL_MEAN.copy(),
-                                      self.INITIAL_VARIANCE.copy(), bounds, self.DELTA, max_kl=self.KL_EPS,
-                                      std_lower_bound=self.STD_LOWER_BOUND.copy(), kl_threshold=self.KL_THRESHOLD)
-        else:
-            init_samples = np.random.uniform(self.LOWER_CONTEXT_BOUNDS, self.UPPER_CONTEXT_BOUNDS, size=(100, 2))
-            return CurrOT(bounds, init_samples, self.target_sampler, self.DELTA, self.METRIC_EPS,
-                          wait_until_threshold=True)
+        # print("Creating self-paced teacher")
+        # bounds = (self.LOWER_CONTEXT_BOUNDS.copy(), self.UPPER_CONTEXT_BOUNDS.copy())
+        # if self.curriculum.self_paced():
+        #     return SelfPacedTeacherV2(self.target_log_likelihood, self.target_sampler, self.INITIAL_MEAN.copy(),
+        #                               self.INITIAL_VARIANCE.copy(), bounds, self.DELTA, max_kl=self.KL_EPS,
+        #                               std_lower_bound=self.STD_LOWER_BOUND.copy(), kl_threshold=self.KL_THRESHOLD)
+        # else:
+        #     init_samples = np.random.uniform(self.LOWER_CONTEXT_BOUNDS, self.UPPER_CONTEXT_BOUNDS, size=(100, 2))
+        #     return CurrOT(bounds, init_samples, self.target_sampler, self.DELTA, self.METRIC_EPS,
+        #                   wait_until_threshold=True)
+        pass
 
     def get_env_name(self):
         return "point_mass_2d"

@@ -7,11 +7,23 @@ from abc import ABC, abstractmethod
 from enum import Enum
 from deep_sprl.util.parameter_parser import create_override_appendix
 from deep_sprl.teachers.spl import SelfPacedTeacherV2
+from stable_baselines3.common.callbacks import BaseCallback
+
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
 from stable_baselines3.sac import SAC
-from stable_baselines3.ppo import PPO
+
+# uncomment for stable baselines 3
+# from stable_baselines3.ppo import PPO
+# from stable_baselines3.ppo.policies import MlpPolicy as PPOMlpPolicy
+
+#uncomment for sbx
+from sbx import PPO
+from sbx.ppo.policies import PPOPolicy as PPOMlpPolicy
+
 from stable_baselines3.common.vec_env import VecEnv, DummyVecEnv
-from stable_baselines3.ppo.policies import MlpPolicy as PPOMlpPolicy
+
 from stable_baselines3.sac.policies import MlpPolicy as SACMlpPolicy
 
 
@@ -158,7 +170,12 @@ class PPOInterface(AgentInterface):
         return np.reshape(flat_acts, (observations.shape[0:-1]) + (-1,))
 
     def mean_policy_std(self, cb_args, cb_kwargs):
-        std_th = self.learner.policy.get_distribution(torch.zeros((1, self.obs_dim))).distribution.stddev[0, :]
+
+        # TODO fix this
+        # std_th = self.learner.policy.get_distribution(torch.zeros((1, self.obs_dim))).distribution.stddev[0, :]
+
+        std_th = torch.zeros((1, self.obs_dim))
+
         return np.mean(std_th.detach().numpy())
 
 
@@ -200,12 +217,18 @@ class Learner(Enum):
     def sac(self):
         return self.value == Learner.SAC.value
 
-    def create_learner(self, env, parameters):
+    def create_learner(self, env, parameters, log_dir):
+        os.makedirs("./logs/wandb")
+        wandb.init(
+        project="pymxs",
+        sync_tensorboard=True,
+        dir="./logs",
+    )
         if self.ppo() and not issubclass(type(env), VecEnv):
             env = DummyVecEnv([lambda: env])
 
         if self.ppo():
-            model = PPO(PPOMlpPolicy, env, **parameters["common"], **parameters[str(self)])
+            model = PPO(PPOMlpPolicy, env, **parameters["common"], **parameters[str(self)], tensorboard_log="./logs")
             interface = PPOInterface(model, env.observation_space.shape[0])
         else:
             model = SAC(SACMlpPolicy, env, **parameters["common"], **parameters[str(self)])
@@ -238,9 +261,10 @@ class Learner(Enum):
             raise RuntimeError("Invalid string: '" + string + "'")
 
 
-class ExperimentCallback:
+class ExperimentCallback(BaseCallback):
 
     def __init__(self, log_directory, learner, env_wrapper, save_interval=5, step_divider=1):
+        super().__init__(verbose=1)
         self.log_dir = os.path.realpath(log_directory)
         self.learner = learner
         self.env_wrapper = env_wrapper
@@ -265,7 +289,7 @@ class ExperimentCallback:
                 header += "|     Context mean     |      Context std     "
         print(header)
 
-    def __call__(self, *args, **kwargs):
+    def _on_step(self, *args, **kwargs):
         if self.algorithm_iteration % self.step_divider == 0:
             data_tpl = (self.iteration,)
 
@@ -304,6 +328,8 @@ class ExperimentCallback:
             self.iteration += 1
 
         self.algorithm_iteration += 1
+
+
 
 
 class AbstractExperiment(ABC):
@@ -392,7 +418,7 @@ class AbstractExperiment(ABC):
             print("Log directory already exists! Going directly to evaluation")
         else:
             callback = ExperimentCallback(log_directory=log_directory, **callback_params)
-            model.learn(total_timesteps=timesteps, reset_num_timesteps=False, callback=callback)
+            model.learn(total_timesteps=timesteps, reset_num_timesteps=False, callback=[WandbCallback(), callback])
 
     def evaluate(self):
         log_dir = self.get_log_dir()

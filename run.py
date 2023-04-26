@@ -11,7 +11,7 @@ def main():
                         choices=["default", "random", "self_paced", "wasserstein", "alp_gmm",
                                  "goal_gan", "acl", "plr", "vds"])
     parser.add_argument("--learner", type=str, default="ppo", choices=["ppo", "sac"])
-    parser.add_argument("--env", type=str, default="point_mass_2d", choices=["point_mass_2d", "maze"])
+    parser.add_argument("--env", type=str, default="point_mass_2d", choices=["point_mass_2d", "mxs_box2d"])
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--n_cores", type=int, default=1)
 
@@ -23,14 +23,14 @@ def main():
     if args.env == "point_mass_2d":
         from deep_sprl.experiments import PointMass2DExperiment
         exp = PointMass2DExperiment(args.base_log_dir, args.type, args.learner, parameters, args.seed)
-    elif args.env == "maze":
-        from deep_sprl.experiments import MazeExperiment
-        exp = MazeExperiment(args.base_log_dir, args.type, args.learner, parameters, args.seed)
+    elif args.env == "mxs_box2d":
+        from deep_sprl.experiments import MXSBox2DExperiment
+        exp = MXSBox2DExperiment(args.base_log_dir, args.type, args.learner, parameters, args.seed)
     else:
         raise RuntimeError("Unknown environment '%s'!" % args.env)
 
     exp.train()
-    exp.evaluate()
+    # exp.evaluate()
 
 
 if __name__ == "__main__":
