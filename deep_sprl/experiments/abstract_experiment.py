@@ -1,4 +1,6 @@
+import json
 import os
+import shutil
 import time
 import torch
 import pickle
@@ -12,19 +14,21 @@ from stable_baselines3.common.callbacks import BaseCallback
 import wandb
 from wandb.integration.sb3 import WandbCallback
 
-from stable_baselines3.sac import SAC
+# from stable_baselines3.sac import SAC
 
 # uncomment for stable baselines 3
 # from stable_baselines3.ppo import PPO
 # from stable_baselines3.ppo.policies import MlpPolicy as PPOMlpPolicy
 
 #uncomment for sbx
-from sbx import PPO
+from sbx import PPO, SAC, DroQ
 from sbx.ppo.policies import PPOPolicy as PPOMlpPolicy
+from sbx.sac.policies import SACPolicy as SACMlpPolicy
+from sbx.tqc.policies import TQCPolicy as DroQMlpPolicy
 
 from stable_baselines3.common.vec_env import VecEnv, DummyVecEnv
 
-from stable_baselines3.sac.policies import MlpPolicy as SACMlpPolicy
+# from stable_baselines3.sac.policies import MlpPolicy as SACMlpPolicy
 
 
 class CurriculumType(Enum):
@@ -149,9 +153,9 @@ class SACInterface(AgentInterface):
         return acts
 
     def mean_policy_std(self, cb_args, cb_kwargs):
-        if "infos_values" in cb_args[0] and len(cb_args[0]["infos_values"]) > 0:
-            return cb_args[0]["infos_values"][4]
-        else:
+        # if "infos_values" in cb_args[0] and len(cb_args[0]["infos_values"]) > 0:
+        #     return cb_args[0]["infos_values"][4]
+        # else:
             return np.nan
 
 
@@ -177,6 +181,27 @@ class PPOInterface(AgentInterface):
         std_th = torch.zeros((1, self.obs_dim))
 
         return np.mean(std_th.detach().numpy())
+    
+
+class DroQInterface(AgentInterface):
+    def __init__(self, learner, obs_dim):
+        super().__init__(learner, obs_dim)
+
+    def estimate_value_internal(self, inputs):
+        return np.squeeze(self.learner.sess.run([self.learner.step_ops[6]], {self.learner.observations_ph: inputs}))
+
+    def get_action(self, observations):
+        flat_obs = np.reshape(observations, (-1, observations.shape[-1]))
+        flat_acts = self.learner.predict(flat_obs, deterministic=False)[0]
+        acts = np.reshape(flat_acts, (observations.shape[0:-1]) + (-1,))
+        return acts
+
+    def mean_policy_std(self, cb_args, cb_kwargs):
+        # if "infos_values" in cb_args[0] and len(cb_args[0]["infos_values"]) > 0:
+        #     return cb_args[0]["infos_values"][4]
+        # else:
+            return np.nan
+
 
 
 class SACEvalWrapper:
@@ -204,35 +229,47 @@ class PPOEvalWrapper:
 class Learner(Enum):
     PPO = 1
     SAC = 2
+    DroQ = 3
 
     def __str__(self):
         if self.ppo():
             return "ppo"
-        else:
+        elif self.sac():
             return "sac"
+        else:
+            return "droq"
 
     def ppo(self):
         return self.value == Learner.PPO.value
 
     def sac(self):
         return self.value == Learner.SAC.value
+    
+    def droq(self):
+        return self.value == Learner.DroQ.value
 
     def create_learner(self, env, parameters, log_dir):
-        os.makedirs("./logs/wandb")
+        # log_dir
+        # os.makedirs("./logs/wandb")
+        # os.makedirs(f"{log_dir}" + "/wandb")
+        # wandb_dir = f"{log_dir}" + "/wandb" 
         wandb.init(
         project="pymxs",
         sync_tensorboard=True,
-        dir="./logs",
+        save_code=True,
     )
         if self.ppo() and not issubclass(type(env), VecEnv):
             env = DummyVecEnv([lambda: env])
 
         if self.ppo():
-            model = PPO(PPOMlpPolicy, env, **parameters["common"], **parameters[str(self)], tensorboard_log="./logs")
+            model = PPO(PPOMlpPolicy, env, **parameters["common"], **parameters[str(self)], tensorboard_log=log_dir)
             interface = PPOInterface(model, env.observation_space.shape[0])
-        else:
-            model = SAC(SACMlpPolicy, env, **parameters["common"], **parameters[str(self)])
+        elif self.sac():
+            model = SAC(SACMlpPolicy, env, **parameters["common"], **parameters[str(self)], tensorboard_log=log_dir)
             interface = SACInterface(model, env.observation_space.shape[0])
+        else:
+            model = DroQ("MlpPolicy", env, **parameters["common"], **parameters[str(self)], tensorboard_log=log_dir)
+            interface = DroQInterface(model, env.observation_space.shape[0])
 
         return model, interface
 
@@ -257,6 +294,8 @@ class Learner(Enum):
             return Learner.PPO
         elif string == str(Learner.SAC):
             return Learner.SAC
+        elif string == str(Learner.DroQ):
+            return Learner.DroQ
         else:
             raise RuntimeError("Invalid string: '" + string + "'")
 
@@ -344,11 +383,13 @@ class AbstractExperiment(ABC):
                      CurriculumType.PLR: ["PLR_REPLAY_RATE", "PLR_BETA", "PLR_RHO"],
                      CurriculumType.VDS: ["VDS_NQ", "VDS_LR", "VDS_EPOCHS", "VDS_BATCHES"]}
 
-    def __init__(self, base_log_dir, curriculum_name, learner_name, parameters, seed, view=False):
+    def __init__(self, base_log_dir, curriculum_name, learner_name, env, config_dir, parameters, seed, view=False):
         self.base_log_dir = base_log_dir
         self.parameters = parameters
         self.curriculum = CurriculumType.from_string(curriculum_name)
         self.learner = Learner.from_string(learner_name)
+        self.env_name = env
+        self.config_dir = config_dir
         self.seed = seed
         self.view = view
         self.process_parameters()
@@ -418,7 +459,10 @@ class AbstractExperiment(ABC):
             print("Log directory already exists! Going directly to evaluation")
         else:
             callback = ExperimentCallback(log_directory=log_directory, **callback_params)
-            model.learn(total_timesteps=timesteps, reset_num_timesteps=False, callback=[WandbCallback(), callback])
+            model.learn(total_timesteps=timesteps, reset_num_timesteps=False, callback=[WandbCallback(model_save_path=log_directory, verbose=1, model_save_freq=10_000), callback])
+            model.save(f"{log_directory}/final_model.zip")
+            with open(f"{log_directory}/metadata.json", "w") as f:
+                json.dump(self.parameters, f)
 
     def evaluate(self):
         log_dir = self.get_log_dir()

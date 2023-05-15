@@ -13,17 +13,29 @@ RUN pip3 install earcut
 RUN pip3 install shimmy
 RUN pip3 install tensorboard
 
-COPY ./requirements.txt /app/requirements.txt
+COPY ./currot/requirements.txt /app/requirements.txt
 RUN pip3 install -r requirements.txt
 
-COPY ./nadaraya-watson /app/nadaraya-watson
+COPY ./currot/nadaraya-watson /app/nadaraya-watson
 RUN cd /app/nadaraya-watson && pip3 install .
 
-COPY ./gym_mxs /app/gym_mxs
+COPY ./mxs/pymxs/gym_mxs /app/gym_mxs
 RUN cd /app/gym_mxs && pip3 install -e .
 
+# COPY ./mxs/pymxs/ /app/pymxs
 
-COPY . .
+COPY ./currot /app/
+
+
+COPY ./mxs/pymxs/analysis_scripts /app/analysis_scripts
+# COPY /home/tu18537/dev/mxs/pymxs/gym_mxs /app/gym_mxs
+COPY ./mxs/pymxs/inertia /app/inertia
+COPY ./mxs/pymxs/models /app/models
+COPY ./mxs/pymxs//processing_scripts /app/processing_scripts
+COPY ./mxs/pymxs/pyaerso /app/pyaerso
+# COPY ./pymxs_sbx_run.py /app/pymxs_sbx_run.py
+# COPY ./pymxs_sbx_box.py /app/pymxs_sbx_box.py
+
 
 # COPY ./analysis_scripts /app/analysis_scripts
 # COPY /home/tu18537/dev/mxs/pymxs/gym_mxs /app/gym_mxs
@@ -37,4 +49,4 @@ COPY . .
 ENV WANDB_API_KEY="ea17412f95c94dfcc41410f554ef62a1aff388ab"
 
 ENTRYPOINT ["python3", "run.py"]
-CMD ["--type", "alp_gmm", "--learner", "ppo", "--env", "mxs_box2d"]
+CMD ["--type", "alp_gmm", "--learner", "droq", "--env", "mxs_box2d"]
